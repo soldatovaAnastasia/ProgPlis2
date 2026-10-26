@@ -12,6 +12,7 @@ module top_1 (
 );
     localparam [7:0]  TARGET_BYTE = 8'b00101110;
     localparam [31:0] TIMER_MULT  = 32'd68;
+    localparam [2:0]  EXIT_STATE  = 3'd4;
 
     localparam [1:0] S_SEARCH   = 2'd0,
                      S_TRAVERSE = 2'd1,
@@ -21,8 +22,10 @@ module top_1 (
     reg [1:0]  phase;
     reg [7:0]  shift_reg;
     reg [2:0]  gstate, next_g;
-    reg [31:0] sum_next;
+    reg [31:0] sum_cur;      // сумма с учётом текущего состояния
+    reg [31:0] sum_full;     // полная сумма пути (с финальным состоянием)
     reg [39:0] timer_cnt;
+    reg        add_last;     // нужно досуммировать вклад состояния-выхода
 
     // таблица переходов графа
     function [2:0] next_state;
@@ -56,6 +59,7 @@ module top_1 (
             gstate     <= 3'd0;
             sum_out    <= 32'd0;
             timer_cnt  <= 40'd0;
+            add_last   <= 1'b0;
             found1     <= 1'b0;
             found2     <= 1'b0;
             timer_done <= 1'b0;
@@ -70,27 +74,35 @@ module top_1 (
                     if (found1) begin            // такт перехода, bit_in не используется
                         phase   <= S_TRAVERSE;
                         gstate  <= 3'd0;
-                        sum_out <= 32'd0;        // вклад состояния 0 равен 57*0 = 0
+                        sum_out <= 32'd0;
                     end else begin
                         shift_reg <= {shift_reg[6:0], bit_in};
-                        if (shift_reg == TARGET_BYTE)
+                        // сравниваем уже с учётом только что пришедшего бита
+                        if ({shift_reg[6:0], bit_in} == TARGET_BYTE)
                             found1 <= 1'b1;
                     end
                 end
 
                 S_TRAVERSE: begin
-                    next_g   = next_state(gstate, bit_in);
-                    sum_next = sum_out + state_out(next_g) * next_g;
-                    gstate   <= next_g;
-                    sum_out  <= sum_next;
-                    if (next_g == 3'd4) begin
+                    next_g  = next_state(gstate, bit_in);
+                    sum_cur = sum_out + state_out(gstate) * gstate;
+                    gstate  <= next_g;
+                    sum_out <= sum_cur;
+                    if (next_g == EXIT_STATE) begin
+                        sum_full  = sum_cur + state_out(EXIT_STATE) * EXIT_STATE;
                         found2    <= 1'b1;
-                        timer_cnt <= sum_next * TIMER_MULT;
+                        timer_cnt <= sum_full * TIMER_MULT;
+                        add_last  <= 1'b1;
                         phase     <= S_TIMER;
                     end
                 end
 
                 S_TIMER: begin
+                    // на первом такте таймера добавляем вклад состояния-выхода
+                    if (add_last) begin
+                        sum_out  <= sum_out + state_out(EXIT_STATE) * EXIT_STATE;
+                        add_last <= 1'b0;
+                    end
                     if (timer_cnt <= 1) begin
                         timer_done <= 1'b1;
                         phase      <= S_WAIT;
@@ -101,7 +113,7 @@ module top_1 (
                 S_WAIT: begin
                     if (done) begin
                         phase     <= S_SEARCH;
-                        shift_reg <= 8'd0;     
+                        shift_reg <= 8'd0;
                         gstate    <= 3'd0;
                         sum_out   <= 32'd0;
                     end
